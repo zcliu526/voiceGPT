@@ -1,21 +1,30 @@
-#uvicorn main:app
-#uvicorn main:app --reload
+# uvicorn main:app
+# uvicorn main:app --reload
 
+# Main imports
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from decouple import config
 import openai
 
-#custom function imports
+
+# Custom function imports
+from functions.text_to_speech import convert_text_to_speech
 from functions.openai_requests import convert_audio_to_text, get_chat_response
 from functions.database import store_messages, reset_messages
-from functions.text_to_speech import convert_text_to_speech
 
-#init
+
+# Get Environment Vars
+openai.organization = config("OPEN_AI_ORG")
+openai.api_key = config("OPEN_AI_KEY")
+
+
+# Initiate App
 app = FastAPI()
 
-#CORS - Origins
+
+# CORS - Origins
 origins = [
     "http://localhost:5173",
     "http://localhost:5174",
@@ -23,61 +32,62 @@ origins = [
     "http://localhost:3000",
 ]
 
-#CORS - middleware
+
+# CORS - Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
-@app.get("/health")
-async def check_health():
-    return {"message": "healthy"}
 
-# Reset messages
+# Reset Conversation
 @app.get("/reset")
 async def reset_conversation():
     reset_messages()
-    return {"message": "Coversation reset"}
+    return {"response": "conversation reset"}
 
-# post bot response
-# note: Not playing in browser when uusing post request
-@app.get("/post-audio-get")
-async def get_audio():
-    
-    # Get saved audio
-    audio_input = open("voice.mp3", "rb") #read bytes
-    
-    # Decode audo
+
+# Post bot response
+# Note: Not playing back in browser when using post request.
+@app.post("/post-audio/")
+async def post_audio(file: UploadFile = File(...)):
+
+    # Convert audio to text - production
+    # Save the file from frontend
+    with open(file.filename, "wb") as buffer:
+        buffer.write(file.file.read())
+    audio_input = open(file.filename, "rb")
+
+    # Decode audio
     message_decoded = convert_audio_to_text(audio_input)
-    
-    # Guard: exsure message decoded
+
+    # Guard: Ensure output
     if not message_decoded:
-        return HTTPException(status_code=400, detail="Failed to decode audio")
+        raise HTTPException(status_code=400, detail="Failed to decode audio")
 
-    # Get ChatGPT response
+    # Get chat response
     chat_response = get_chat_response(message_decoded)
-
-    # Guard: exsure message decoded
-    if not chat_response:
-        return HTTPException(status_code=400, detail="Failed to get chat response")
 
     # Store messages
     store_messages(message_decoded, chat_response)
 
-    # convert chat res to audio
-    audio_output = convert_audio_to_text(chat_response)
+    # Guard: Ensure output
+    if not chat_response:
+        raise HTTPException(status_code=400, detail="Failed chat response")
 
-    # Guard: exsure audio output
+    # Convert chat response to audio
+    audio_output = convert_text_to_speech(chat_response)
+
+    # Guard: Ensure output
     if not audio_output:
-        return HTTPException(status_code=400, detail="Failed to get audio output")
-    
-    # create a generator that yields chunks of data
+        raise HTTPException(status_code=400, detail="Failed audio output")
+
+    # Create a generator that yields chunks of data
     def iterfile():
-        yield audio_input
+        yield audio_output
 
-        return StreamingResponse(iterfile(), media_type="audio/mpeg")
-
-    return "Done"
+    # Use for Post: Return output audio
+    return StreamingResponse(iterfile(), media_type="application/octet-stream")
